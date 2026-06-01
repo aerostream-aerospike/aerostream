@@ -71,6 +71,8 @@ typedef struct __attribute__((packed)) {
 
 ### 3.2 Record Header (present in PRODUCE and RECORD messages)
 
+Packed size is **22 bytes** (8 + 8 + 2 + 4).
+
 ```c
 typedef struct __attribute__((packed)) {
     int64_t  offset;           // -1 on produce (server assigns), set on deliver
@@ -112,8 +114,8 @@ counter, then writes the record to the storage engine.
 +------------------+ 136
 | ack_mode (1B)    |           0x00 = none, 0x01 = leader, 0x02 = all replicas
 +------------------+ 137
-| as_stream_record_hdr | 18 bytes  (offset field ignored by server on produce)
-+------------------+ 155
+| as_stream_record_hdr | 22 bytes  (offset field ignored by server on produce)
++------------------+ 159
 | header entries   | variable  (headers_count × as_stream_header_entry + data)
 +------------------+
 | payload          | variable  (payload_size bytes)
@@ -249,8 +251,8 @@ offset and release the in-flight slot.
 +----------------------+ 8
 | partition_id (4B)    |
 +----------------------+ 12
-| as_stream_record_hdr | 18 bytes  (offset and timestamp_ns are set)
-+----------------------+ 30
+| as_stream_record_hdr | 22 bytes  (offset and timestamp_ns are set)
++----------------------+ 34
 | header entries       | variable
 +----------------------+
 | payload              | variable

@@ -1,0 +1,23 @@
+{
+  "name": "aerostream",
+  "version": "0.1.0",
+  "description": "Node.js client for AeroStream — native stream primitives for Aerospike (produce, consume, replay, pub/sub).",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "lib/"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "aerospike",
+    "aerostream",
+    "streams",
+    "pubsub",
+    "kafka",
+    "consumer-group"
+  ],
+  "license": "Apache-2.0",
+  "dependencies": {}
+}
