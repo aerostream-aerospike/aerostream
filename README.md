@@ -49,8 +49,6 @@ aerospike-server/               git submodule (aerospike server source)
     as_stream_config.c
 clients/
   node/                         node.js client (working, zero deps)
-  go/                           placeholder
-  java/                         placeholder
 examples/
   node/                         runnable producer/consumer/subscriber scripts
 docs/
