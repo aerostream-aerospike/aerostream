@@ -47,11 +47,16 @@ aerospike-server/               git submodule (aerospike server source)
     as_stream_replay.c
     as_stream_pubsub.c
     as_stream_config.c
-clients/go/
-clients/java/
+clients/
+  node/                         node.js client (working, zero deps)
+  go/                           placeholder
+  java/                         placeholder
+examples/
+  node/                         runnable producer/consumer/subscriber scripts
 docs/
   DESIGN.md                     architecture writeup + design decisions
   PROTOCOL.md                   full wire protocol spec
+aerostream-ctl.sh               start/stop/tail the dev server
 ```
 
 ---
@@ -70,6 +75,73 @@ cd aerospike-server && make
 
 ---
 
+## running it
+
+there's a little control script at the repo root that handles the dev server
+(memory storage, console logging, the `aerostream` namespace already wired in):
+
+```bash
+./aerostream-ctl.sh start      # launch asd in the background
+./aerostream-ctl.sh tail       # follow the log
+./aerostream-ctl.sh status     # is it up?
+./aerostream-ctl.sh stop       # graceful shutdown
+```
+
+note: community edition caps you at 2 namespaces, so the dev config ships with
+`test` + `aerostream` (the example `bar` namespace got removed to make room).
+
+---
+
+## clients
+
+### node.js
+
+a standalone client over a raw socket, no native addon, zero dependencies. it
+lives in `clients/node/` and speaks all 8 message types directly. produce,
+durable consumer groups, replay, and ephemeral pub/sub all work end-to-end.
+
+```js
+const { Producer, Consumer, Subscriber, ACK_MODE, SEEK } = require('./clients/node');
+
+// produce
+const producer = new Producer({ host: '127.0.0.1', port: 3000 });
+await producer.connect();
+const ack = await producer.produce({
+  stream: 'orders', partitionKey: 'cust-42',
+  payload: JSON.stringify({ id: 1 }), ackMode: ACK_MODE.LEADER,
+});
+// ack = { offset, partitionId, timestampNs, status }
+
+// consume (durable, with a group)
+const consumer = new Consumer({ host: '127.0.0.1', port: 3000 });
+consumer.on('record', (rec) => { console.log(rec.payload.toString()); rec.ack(); });
+await consumer.connect();
+await consumer.consume({ stream: 'orders', group: 'billing', seekType: SEEK.EARLIEST });
+
+// subscribe (ephemeral pub/sub)
+const sub = new Subscriber({ host: '127.0.0.1', port: 3000 });
+sub.on('message', (msg) => console.log(msg.payload.toString()));
+await sub.connect();
+await sub.subscribe({ topic: 'orders' });
+```
+
+runnable examples are in `examples/node/` (`produce.js`, `consume.js`,
+`subscribe.js`, and a self-contained `roundtrip.js` smoke test). see
+`clients/node/README.md` for the full api.
+
+### go / java
+
+not started yet, the directories are placeholders.
+
+---
+
 ## status
 
-this is an RFC / early prototype. the design doc and protocol spec are done (`docs/`), implementation is in progress. if you've ever been annoyed by the aerospike + kafka setup or have thoughts on the protocol design, open an issue or read through `docs/DESIGN.md`.
+early but real. the server module builds, runs, and handles all 8 message types,
+and the node client does produce, consume, replay, and pub/sub end-to-end against
+it. there are still rough edges (headers bin not written yet, consumer-group acks
+aren't CAS-protected yet, pub/sub holds a lock during fan-out) and the go/java
+clients don't exist. the design doc and protocol spec are in `docs/`.
+
+if you've ever been annoyed by the aerospike + kafka setup or have thoughts on the
+protocol design, open an issue or read through `docs/DESIGN.md`.
