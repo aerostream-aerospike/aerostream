@@ -129,7 +129,7 @@ runnable examples are in `examples/node/` (`produce.js`, `consume.js`,
 
 ### go / java
 
-not started yet, the directories are placeholders.
+not started yet, i will do when i feel like :)
 
 ---
 
