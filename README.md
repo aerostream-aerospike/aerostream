@@ -35,7 +35,7 @@ storage layout:
 ## repo layout
 
 ```
-aerospike-server/               git submodule (aerospike server source)
+aerospike-server/               git submodule, the patched server (see below)
   as/include/base/
     proto.h                     patched: type constants 10-17 + wire structs
   as/src/base/
@@ -59,6 +59,18 @@ aerostream-ctl.sh               start/stop/tail the dev server
 
 ---
 
+## the patched server
+
+the `aerospike-server/` submodule is my fork of aerospike community edition with
+the aerostream module baked in. it lives here:
+
+**https://github.com/aerostream-aerospike/aerospike-server**
+
+everything aerostream-specific is under `as/src/modules/aerostream/`, plus a tiny
+patch to `proto.h` and `service.c`. the rest is stock aerospike.
+
+---
+
 ## building
 
 ubuntu 20.04/22.04 or RHEL 8/9 only. doesn't build on mac, sorry.
@@ -67,6 +79,7 @@ ubuntu 20.04/22.04 or RHEL 8/9 only. doesn't build on mac, sorry.
 sudo apt-get install -y build-essential autoconf automake libtool \
   libssl-dev zlib1g-dev liblua5.4-dev python3 git pkg-config
 
+# pulls in the fork at aerostream-aerospike/aerospike-server
 git submodule update --init --recursive
 cd aerospike-server && make
 ```
