@@ -30,7 +30,7 @@ network hop between storage and messaging. Stream records are Aerospike records.
 Consumer group offsets are Aerospike records. Replay is a range scan.
 
 I added eight new message types to the Aerospike binary protocol
-(types `10`–`17`) handled by a self-contained module in
+(types `10`-`17`) handled by a self-contained module in
 `as/src/modules/aerostream/`. The existing port 3000, TLS config, and
 authentication pipeline are reused unchanged.
 

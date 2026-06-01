@@ -21,7 +21,7 @@ so i built aerostream. it's a c module that lives inside the aerospike server an
 
 ## how it works
 
-8 new message types (10–17) on the existing port 3000. same TLS, same auth, same everything - just new type values in the 8-byte header that aerospike already puts on every message. the dispatch lives in `service.c` and routes to the aerostream module. all the actual logic is self-contained in `as/src/modules/aerostream/`.
+8 new message types (10-17) on the existing port 3000. same TLS, same auth, same everything - just new type values in the 8-byte header that aerospike already puts on every message. the dispatch lives in `service.c` and routes to the aerostream module. all the actual logic is self-contained in `as/src/modules/aerostream/`.
 
 the two core files that touch existing aerospike code are `as/include/base/proto.h` (adds the type constants and wire structs) and `as/src/base/service.c` (adds the dispatch cases). that's it. the diff on those two files is intentionally tiny.
 

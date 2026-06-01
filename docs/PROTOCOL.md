@@ -37,7 +37,7 @@ standard 8-byte `as_proto` header defined in `as_proto.h`:
 | Field   | Size | Description                                      |
 |---------|------|--------------------------------------------------|
 | version | 1B   | Protocol version. AeroStream uses `2` (unchanged)|
-| type    | 1B   | Message type. AeroStream claims `10`–`17`        |
+| type    | 1B   | Message type. AeroStream claims `10`-`17`        |
 | size    | 6B   | Payload size in bytes, big-endian, follows header|
 
 ### 2.1 New Type Values
@@ -500,15 +500,15 @@ Record key format: `"{group_name}:{stream_name}:{partition_id}"`
 
 | File                          | Change                                              |
 |-------------------------------|-----------------------------------------------------|
-| `as/include/base/proto.h`     | Add type constants `10`–`17` and struct definitions |
-| `as/src/base/service.c`       | Add dispatch cases for types `10`–`17`              |
+| `as/include/base/proto.h`     | Add type constants `10`-`17` and struct definitions |
+| `as/src/base/service.c`       | Add dispatch cases for types `10`-`17`              |
 | `as/src/modules/aerostream/`  | New module directory (all AeroStream logic)         |
 
 ---
 
 ## 9. Upgrade Path to Approach 1 (full integration)
 
-I designed this spec so that the eight new type values (`10`–`17`) can be
+I designed this spec so that the eight new type values (`10`-`17`) can be
 submitted as a minimal patch to `proto.h` and `service.c` with the bulk
 of the implementation living in `modules/aerostream/` as a self-contained
 module. My goal is a PR surface small enough for the Aerospike core team to
