@@ -1,0 +1,3 @@
+[submodule "aerospike-server"]
+	path = aerospike-server
+	url = https://github.com/aerospike/aerospike-server.git
