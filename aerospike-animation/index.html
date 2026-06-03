@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>How Aerospike Stores Data — Animated</title>
+<style>
+  :root {
+    --bg:        #0b0f14;
+    --panel:     #121822;
+    --panel-2:   #182230;
+    --ink:       #e6edf3;
+    --muted:     #8b9bb0;
+    --line:      #2a3848;
+    --teal:      #2dd4bf;
+    --amber:     #f5b942;
+    --pink:      #f472b6;
+    --pink2:     #f472b6;
+    --blue:      #5aa9ff;
+    --red:       #ff6b6b;
+    --green:     #4ade80;
+    --mono: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0; padding: 0;
+    background: radial-gradient(1200px 700px at 70% -10%, #16202e 0%, var(--bg) 60%);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 120px; }
+
+  header h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.2px; }
+  header p  { margin: 0; color: var(--muted); font-size: 14px; }
+  header .mono { font-family: var(--mono); color: var(--teal); }
+
+  /* progress rail */
+  .rail {
+    display: flex; gap: 6px; margin: 22px 0 18px; flex-wrap: wrap;
+  }
+  .rail button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel);
+    color: var(--muted); font-family: var(--mono); font-size: 11px;
+    padding: 6px 9px; border-radius: 999px; cursor: pointer; transition: .2s;
+    white-space: nowrap;
+  }
+  .rail button.on { color: var(--bg); background: var(--teal); border-color: var(--teal); font-weight: 600; }
+  .rail button:hover { color: var(--ink); }
+  .rail button.on:hover { color: var(--bg); }
+
+  /* stage shell */
+  .stage-shell {
+    position: relative; min-height: 520px;
+    border: 1px solid var(--line); border-radius: 16px;
+    background: linear-gradient(180deg, var(--panel) 0%, #0e141d 100%);
+    overflow: hidden;
+  }
+  .stage { display: none; padding: 26px 28px; }
+  .stage.active { display: block; }
+
+  .stage h2 {
+    margin: 0 0 6px; font-size: 19px; display: flex; align-items: baseline; gap: 10px;
+  }
+  .stage h2 .n {
+    font-family: var(--mono); font-size: 12px; color: var(--bg);
+    background: var(--amber); border-radius: 6px; padding: 2px 7px;
+  }
+  .stage .lede { color: var(--muted); font-size: 13.5px; margin: 0 0 20px; max-width: 760px; line-height: 1.55; }
+  .stage .lede code, .diagram code, .chip {
+    font-family: var(--mono); font-size: .92em; color: var(--teal);
+    background: rgba(45,212,191,.08); padding: 1px 5px; border-radius: 4px;
+  }
+
+  /* generic animated reveal */
+  .reveal { opacity: 0; transform: translateY(8px); }
+  .stage.active .reveal { animation: rise .55s cubic-bezier(.2,.7,.2,1) forwards; }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  .diagram { position: relative; }
+
+  /* ---- boxes / nodes ---- */
+  .node {
+    border: 1px solid var(--line); background: var(--panel-2);
+    border-radius: 10px; padding: 10px 12px; font-size: 13px;
+  }
+  .node .t { font-weight: 600; font-size: 13px; }
+  .node .s { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .accent-teal  { border-color: rgba(45,212,191,.45); box-shadow: 0 0 0 1px rgba(45,212,191,.12) inset; }
+  .accent-amber { border-color: rgba(245,185,66,.45); box-shadow: 0 0 0 1px rgba(245,185,66,.12) inset; }
+  .accent-blue  { border-color: rgba(90,169,255,.45); }
+  .accent-pink  { border-color: rgba(244,114,182,.45); }
+
+  /* ---- stage 1: hierarchy nesting ---- */
+  .nest { display: grid; gap: 0; }
+  .layer {
+    border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 0;
+    background: rgba(255,255,255,.012);
+  }
+  .layer + .layer { margin-top: -2px; }
+  .layer .hl { display: flex; align-items: center; gap: 10px; }
+  .layer .badge {
+    font-family: var(--mono); font-size: 10.5px; color: var(--bg);
+    padding: 2px 7px; border-radius: 5px; font-weight: 600;
+  }
+  .layer .desc { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .stage.active .layer { animation: rise .5s backwards; }
+  .stage.active .layer:nth-child(1){ animation-delay:.05s }
+  .stage.active .layer:nth-child(2){ animation-delay:.18s }
+  .stage.active .layer:nth-child(3){ animation-delay:.31s }
+  .stage.active .layer:nth-child(4){ animation-delay:.44s }
+  .stage.active .layer:nth-child(5){ animation-delay:.57s }
+  .stage.active .layer:nth-child(6){ animation-delay:.70s }
+
+  /* ---- flow rows ---- */
+  .flow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .arrow { color: var(--muted); font-size: 22px; animation: nudge 1.4s ease-in-out infinite; }
+  @keyframes nudge { 0%,100%{ transform: translateX(0) } 50%{ transform: translateX(4px) } }
+
+  /* digest bytes */
+  .bytes { display: flex; gap: 3px; flex-wrap: wrap; max-width: 360px; }
+  .byte {
+    font-family: var(--mono); font-size: 11px; background: #0e1620;
+    border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; color: var(--ink);
+  }
+  .byte.hot { border-color: var(--amber); color: var(--amber); box-shadow: 0 0 10px rgba(245,185,66,.25); }
+  .stage.active .byte { animation: flip .4s backwards; }
+  .stage.active .byte:nth-child(n){ animation-delay: calc(var(--i,0) * 40ms); }
+  @keyframes flip { from { opacity:0; transform: rotateX(80deg) } to { opacity:1; transform:none } }
+
+  /* partition grid */
+  .pgrid {
+    display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px;
+    width: 320px;
+  }
+  .pcell { aspect-ratio: 1; border-radius: 2px; background: #1b2735; }
+  .pcell.target { background: var(--teal); box-shadow: 0 0 14px rgba(45,212,191,.6); animation: ppulse 1.2s ease-in-out infinite; }
+  @keyframes ppulse { 0%,100%{ transform: scale(1) } 50%{ transform: scale(1.35) } }
+
+  /* ---- sprig tree (svg) ---- */
+  svg .edge { stroke: var(--line); stroke-width: 1.5; fill: none; }
+  svg .edge.draw { stroke-dasharray: 200; stroke-dashoffset: 200; }
+  .stage.active svg .edge.draw { animation: dash 1s ease forwards; }
+  @keyframes dash { to { stroke-dashoffset: 0; } }
+  svg circle.tnode { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.5; }
+  svg circle.tnode.red { fill: #3a1620; stroke: var(--red); }
+  svg circle.tnode.black { fill: #16202c; stroke: #4a5a6c; }
+  svg circle.tnode.hit { fill: var(--teal); stroke: var(--teal); }
+  svg text { fill: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+  /* ---- wblock / rblocks ---- */
+  .wblock {
+    border: 1px dashed var(--amber); border-radius: 10px; padding: 10px; background: rgba(245,185,66,.04);
+  }
+  .rblocks { display: flex; gap: 2px; flex-wrap: wrap; }
+  .rb { width: 16px; height: 22px; border-radius: 2px; background: #233040; border: 1px solid var(--line); }
+  .rb.live { background: linear-gradient(180deg, var(--teal), #1c8f80); border-color: var(--teal); }
+  .rb.dead { background: #3a2330; border-color: #6b3a4a; }
+  .rb.writing { background: var(--amber); border-color: var(--amber); animation: wpulse .6s ease-in-out infinite; }
+  @keyframes wpulse { 0%,100%{ opacity:.6 } 50%{ opacity:1 } }
+
+  /* moving record token */
+  .token {
+    position: absolute; left: 0; top: 0;
+    font-family: var(--mono); font-size: 11px; color: var(--bg); font-weight: 700;
+    background: var(--teal); border-radius: 6px; padding: 4px 8px;
+    box-shadow: 0 6px 18px rgba(45,212,191,.4);
+  }
+
+  /* write path lanes */
+  .lanes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; position: relative; }
+  .lane {
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 10px 14px;
+    background: var(--panel-2); text-align: center; position: relative;
+  }
+  .lane .ti { font-size: 12.5px; font-weight: 600; }
+  .lane .si { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+  .lane.lit { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal) inset, 0 0 22px rgba(45,212,191,.18); }
+  .lane .dot {
+    position: absolute; top: -7px; left: 50%; transform: translateX(-50%);
+    width: 12px; height: 12px; border-radius: 50%; background: #243042; border: 1px solid var(--line);
+  }
+  .lane.lit .dot { background: var(--teal); border-color: var(--teal); box-shadow: 0 0 12px var(--teal); }
+
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 760px){ .twocol { grid-template-columns: 1fr; } .lanes { grid-template-columns: 1fr 1fr; } .pgrid{width:260px} }
+
+  .callout {
+    border-left: 3px solid var(--amber); background: rgba(245,185,66,.06);
+    padding: 10px 14px; border-radius: 0 8px 8px 0; color: var(--ink); font-size: 13px; margin-top: 18px;
+    line-height: 1.5;
+  }
+  .callout b { color: var(--amber); }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 14px; font-size: 11.5px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+  /* controls */
+  .controls {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(180deg, rgba(11,15,20,0) 0%, var(--bg) 38%);
+    padding: 16px 20px 20px;
+  }
+  .controls .inner {
+    max-width: 1040px; margin: 0 auto; display: flex; align-items: center; gap: 12px;
+  }
+  .controls button {
+    appearance: none; border: 1px solid var(--line); background: var(--panel);
+    color: var(--ink); font-family: var(--sans); font-size: 14px; font-weight: 600;
+    padding: 10px 16px; border-radius: 10px; cursor: pointer; transition: .15s;
+  }
+  .controls button:hover { border-color: var(--teal); color: var(--teal); }
+  .controls .play { background: var(--teal); color: var(--bg); border-color: var(--teal); }
+  .controls .play:hover { color: var(--bg); filter: brightness(1.05); }
+  .controls .count { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-left: auto; }
+  .controls .bar { flex: 1; height: 4px; background: var(--line); border-radius: 999px; overflow: hidden; max-width: 280px; }
+  .controls .bar i { display: block; height: 100%; background: var(--teal); width: 0; transition: width .4s; }
+
+  .foot { color: var(--muted); font-size: 12px; margin-top: 16px; }
+  .foot a { color: var(--teal); }
+
+  /* ---- aerostream stages ---- */
+  .types { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .type {
+    display: flex; align-items: center; gap: 10px; border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; background: var(--panel-2); font-size: 12.5px;
+  }
+  .stage.active .type { animation: rise .45s backwards; }
+  .stage.active .type:nth-child(1){animation-delay:.04s}
+  .stage.active .type:nth-child(2){animation-delay:.10s}
+  .stage.active .type:nth-child(3){animation-delay:.16s}
+  .stage.active .type:nth-child(4){animation-delay:.22s}
+  .stage.active .type:nth-child(5){animation-delay:.28s}
+  .stage.active .type:nth-child(6){animation-delay:.34s}
+  .stage.active .type:nth-child(7){animation-delay:.40s}
+  .stage.active .type:nth-child(8){animation-delay:.46s}
+  .type .id {
+    font-family: var(--mono); font-size: 11px; color: var(--bg); background: var(--teal);
+    border-radius: 5px; padding: 2px 6px; min-width: 24px; text-align: center; font-weight: 700;
+  }
+  .type .id.srv { background: var(--amber); }
+  .type .nm { font-family: var(--mono); font-size: 11.5px; }
+  .type .dir { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  .counter { font-family: var(--mono); font-size: 34px; color: var(--teal); font-weight: 700; line-height: 1; }
+  .counter .lbl { font-size: 11px; color: var(--muted); font-weight: 400; display: block; margin-top: 6px; }
+
+  .grouprow { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .glabel { font-family: var(--mono); font-size: 12px; width: 96px; color: var(--ink); }
+  .gtrack { position: relative; flex: 1; height: 28px; background: #142030; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .gfill { position: absolute; top: 0; left: 0; bottom: 0; width: 0; border-radius: 6px; transition: width 1.1s cubic-bezier(.3,.8,.3,1); }
+  .gcap { position: absolute; right: 8px; top: 6px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  .subs { display: flex; gap: 10px; flex-wrap: wrap; }
+  .sub {
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 13px; font-size: 12px;
+    background: var(--panel-2); color: var(--muted); transition: .25s;
+  }
+  .sub.lit { border-color: var(--pink2); box-shadow: 0 0 16px rgba(244,114,182,.35); color: var(--ink); transform: translateY(-2px); }
+
+  .pulse-node { transition: box-shadow .25s, border-color .25s, transform .25s; }
+  .pulse-node.lit { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal) inset, 0 0 20px rgba(45,212,191,.25); transform: translateY(-2px); }
+  .pulse-node.lit.pink { border-color: var(--pink2); box-shadow: 0 0 0 1px var(--pink2) inset, 0 0 20px rgba(244,114,182,.25); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>How Aerospike Stores Data</h1>
+    <p>An animated walk through the storage engine, then how <span class="mono" style="color:var(--amber)">AeroStream</span> builds streams on top of it — <span class="mono">digest → partition → index → rblocks → produce/consume/replay/pub-sub</span>. Use the arrows or press <span class="mono">→</span>.</p>
+  </header>
+
+  <nav class="rail" id="rail"></nav>
+
+  <div class="stage-shell" id="shell">
+
+    <!-- STAGE 1 -->
+    <section class="stage" data-title="data model">
+      <h2><span class="n">01</span> The data model hierarchy</h2>
+      <p class="lede">Aerospike nests data in a fixed hierarchy. A <code>namespace</code> owns a storage engine and policy; a <code>set</code> groups records like a table; a <code>record</code> holds <code>bins</code>; each bin holds one typed <code>particle</code>. Records are schemaless — two records in a set can have totally different bins.</p>
+      <div class="diagram nest">
+        <div class="layer accent-teal">
+          <div class="hl"><span class="badge" style="background:var(--teal)">namespace</span><span class="t">aerostream</span></div>
+          <div class="desc">storage engine + replication-factor + retention. struct <code>as_namespace</code></div>
+          <div style="margin-top:12px" class="layer">
+            <div class="hl"><span class="badge" style="background:var(--blue)">set</span><span class="t">log</span></div>
+            <div class="desc">optional table-like grouping. 12-bit <code>set_id</code></div>
+            <div style="margin-top:12px" class="layer accent-amber">
+              <div class="hl"><span class="badge" style="background:var(--amber)">record</span><span class="t">orders:3:42</span></div>
+              <div class="desc">one addressable row = <code>as_index</code> / <code>as_record</code></div>
+              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap">
+                <div class="node accent-pink"><div class="t">bin: payload</div><div class="s">particle BLOB (4)</div></div>
+                <div class="node accent-pink"><div class="t">bin: ts</div><div class="s">particle INTEGER (1)</div></div>
+                <div class="node accent-pink"><div class="t">bin: offset</div><div class="s">particle INTEGER (1)</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--teal)"></span> namespace</span>
+        <span><span class="sw" style="background:var(--blue)"></span> set</span>
+        <span><span class="sw" style="background:var(--amber)"></span> record</span>
+        <span><span class="sw" style="background:var(--pink2)"></span> bin → particle</span>
+      </div>
+    </section>
+
+    <!-- STAGE 2 -->
+    <section class="stage" data-title="key → digest → partition">
+      <h2><span class="n">02</span> Key → digest → partition</h2>
+      <p class="lede">A write supplies <code>(namespace, set, key)</code>. Aerospike hashes <code>set + key</code> into a 20-byte <code>cf_digest</code> (RIPEMD-160). The low 12 bits of the first 4 bytes pick one of <code>AS_PARTITIONS = 4096</code> partitions — the unit of distribution, migration, and reservation.</p>
+      <div class="diagram">
+        <div class="flow reveal">
+          <div class="node accent-blue"><div class="t">key</div><div class="s">"orders:3:42"</div></div>
+          <div class="arrow">→</div>
+          <div class="node"><div class="t">RIPEMD-160</div><div class="s">hash(set, key)</div></div>
+          <div class="arrow">→</div>
+          <div class="node accent-amber"><div class="t">cf_digest</div><div class="s">20 bytes</div></div>
+        </div>
+
+        <div style="margin:18px 0 8px" class="bytes" id="digestBytes"></div>
+
+        <div class="flow reveal" style="margin-top:14px">
+          <div class="node"><div class="t">pid = first4 &amp; 0xFFF</div><div class="s">as_partition_getid()</div></div>
+          <div class="arrow">→</div>
+          <div>
+            <div class="pgrid" id="pgrid"></div>
+            <div class="s" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px">4096 partitions (showing 256) — target = <span style="color:var(--teal)">pid 0x4B3</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="callout reveal"><b>Why it matters:</b> the partition is derived purely from the digest, so every node — and the client — can compute where a record lives with zero lookups. The client routes the request straight to that partition's master node.</div>
+    </section>
+
+    <!-- STAGE 3 -->
+    <section class="stage" data-title="primary index">
+      <h2><span class="n">03</span> The primary index (always in RAM)</h2>
+      <p class="lede">Each partition owns an <code>as_index_tree</code>, split into lock-striped red-black sub-trees called <code>sprigs</code>. Each record is a 64-byte <code>as_index</code> node living in an <code>arena</code> (<code>cf_arenax</code>), referenced by a 40-bit handle, not a pointer. The index holds identity + version + a pointer to the data; the bins live in storage.</p>
+      <div class="twocol">
+        <div class="diagram">
+          <svg viewBox="0 0 320 220" width="100%" height="220" aria-label="red-black sprig">
+            <path class="edge draw" d="M160,30 L90,90"/>
+            <path class="edge draw" d="M160,30 L230,90"/>
+            <path class="edge draw" d="M90,90 L50,150"/>
+            <path class="edge draw" d="M90,90 L130,150"/>
+            <path class="edge draw" d="M230,90 L270,150"/>
+            <circle class="tnode black" cx="160" cy="30" r="16"/>
+            <circle class="tnode red"   cx="90"  cy="90" r="16"/>
+            <circle class="tnode black hit" cx="230" cy="90" r="16" id="hitNode"/>
+            <circle class="tnode black" cx="50"  cy="150" r="14"/>
+            <circle class="tnode red"   cx="130" cy="150" r="14"/>
+            <circle class="tnode red"   cx="270" cy="150" r="14"/>
+            <text x="146" y="34">digest</text>
+            <text x="206" y="94" style="fill:var(--teal)">found</text>
+            <text x="120" y="200">sprig = lock-striped red-black sub-tree</text>
+          </svg>
+        </div>
+        <div class="diagram">
+          <div class="node accent-amber reveal" style="font-family:var(--mono)">
+            <div class="t" style="font-family:var(--sans)">as_index — 64 bytes</div>
+            <div class="s" style="margin-top:8px; line-height:1.7; color:var(--ink)">
+              <div><span style="color:var(--amber)">keyd</span>            : cf_digest (20B)</div>
+              <div><span style="color:var(--blue)">set_id_bits</span>     : 12</div>
+              <div><span style="color:var(--blue)">generation</span>      : 16</div>
+              <div><span style="color:var(--blue)">last_update_time</span>: 40</div>
+              <div><span style="color:var(--red)">void_time</span>       : 30  (TTL)</div>
+              <div style="color:var(--muted);margin-top:6px">— pointer into storage —</div>
+              <div><span style="color:var(--teal)">file_id</span>         : 7</div>
+              <div><span style="color:var(--teal)">rblock_id</span>       : 37</div>
+              <div><span style="color:var(--teal)">n_rblocks</span>       : 19</div>
+            </div>
+          </div>
+          <div class="node reveal" style="margin-top:12px">
+            <div class="t">arena · cf_arenax</div>
+            <div class="s">stage[ ] → element[ ] → one 64B as_index each · addressed by 40-bit handle</div>
+          </div>
+        </div>
+      </div>
+      <div class="callout reveal"><b>Hybrid memory model:</b> the index (identity, TTL, version, data pointer) is <b>always in RAM</b>. The actual bin values can live in RAM, SSD, or pmem — addressed by <code>file_id + rblock_id</code>.</div>
+    </section>
+
+    <!-- STAGE 4 -->
+    <section class="stage" data-title="storage layer">
+      <h2><span class="n">04</span> The storage layer — rblocks, wblocks, flat records</h2>
+      <p class="lede">The index points at the data with <code>file_id + rblock_id + n_rblocks</code>. Storage is addressed in 16-byte <code>rblocks</code> and physically managed in large <code>wblocks</code> (<code>write-block-size</code>, e.g. 8 MB). A record is serialized to a packed <code>as_flat_record</code> (magic <code>0x037AF201</code>) that carries its own digest and length.</p>
+      <div class="twocol">
+        <div class="diagram">
+          <div class="node accent-teal reveal" style="font-family:var(--mono)">
+            <div class="t" style="font-family:var(--sans)">as_flat_record (on device)</div>
+            <div class="s" style="margin-top:8px;line-height:1.7;color:var(--ink)">
+              <div><span style="color:var(--teal)">magic</span>     : 0x037AF201</div>
+              <div><span style="color:var(--teal)">n_rblocks</span> : 19  (self-len)</div>
+              <div><span style="color:var(--amber)">keyd</span>      : cf_digest (20B)</div>
+              <div style="color:var(--muted)">meta: void_time, LUT, gen…</div>
+              <div><span style="color:var(--pink2)">bins</span>      : packed particles</div>
+            </div>
+          </div>
+          <div class="s reveal" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:10px">
+            rblock_id = offset &gt;&gt; LOG_2_RBLOCK_SIZE<br>37 bits × 16B → addresses a 2 TB device
+          </div>
+        </div>
+        <div class="diagram">
+          <div class="wblock reveal">
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--amber);font-family:var(--mono);margin-bottom:8px">
+              <span>wblock · write-block-size</span><span>state: USED</span>
+            </div>
+            <div class="rblocks" id="rblockRow"></div>
+          </div>
+          <div class="legend" style="margin-top:12px">
+            <span><span class="sw" style="background:var(--teal)"></span> live record</span>
+            <span><span class="sw" style="background:#3a2330"></span> dead (old version)</span>
+            <span><span class="sw" style="background:#233040;border:1px solid var(--line)"></span> free rblock</span>
+          </div>
+          <div class="s reveal" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:12px">
+            wblock states: FREE · RESERVED · USED · DEFRAG · EMPTYING
+          </div>
+        </div>
+      </div>
+      <div class="callout reveal"><b>Append-only:</b> updating a record never overwrites bytes. It writes a <i>new</i> flat record elsewhere and re-points the index. The old copy becomes a <span style="color:var(--red)">dead</span> rblock, reclaimed later by defrag.</div>
+    </section>
+
+    <!-- STAGE 5 -->
+    <section class="stage" data-title="write path">
+      <h2><span class="n">05</span> The write path, end to end</h2>
+      <p class="lede">Watch a record flow through the engine: route to the master node, reserve the partition &amp; sprig, upsert the <code>as_index</code>, serialize to an <code>as_flat_record</code>, append to the streaming write buffer, flush a <code>wblock</code>, re-point the index, and replicate.</p>
+      <div class="diagram" style="position:relative;padding-top:34px">
+        <div class="token" id="token">record</div>
+        <div class="lanes" id="lanes">
+          <div class="lane" data-step="0"><span class="dot"></span><div class="ti">1 · Route + Reserve</div><div class="si">digest → pid<br>as_partition_reserve()</div></div>
+          <div class="lane" data-step="1"><span class="dot"></span><div class="ti">2 · Index upsert</div><div class="si">lock sprig<br>bump generation, LUT</div></div>
+          <div class="lane" data-step="2"><span class="dot"></span><div class="ti">3 · Serialize + write</div><div class="si">as_flat_record<br>→ wblock (rblocks)</div></div>
+          <div class="lane" data-step="3"><span class="dot"></span><div class="ti">4 · Re-point + replicate</div><div class="si">file_id/rblock_id<br>ship to replica(s)</div></div>
+        </div>
+        <div class="s" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:16px" id="writeNote">streaming write buffer fills a RESERVED wblock, then flushes · recent wblocks stay in the post-write cache for fast reads</div>
+      </div>
+      <div class="callout reveal"><b>One ack, two copies.</b> In the default commit level the client's write isn't acknowledged until the replica(s) have it — durability and availability come from <code>replication-factor</code>, not a separate log.</div>
+    </section>
+
+    <!-- STAGE 6 -->
+    <section class="stage" data-title="defrag + nsup">
+      <h2><span class="n">06</span> Reclaim &amp; expire — defrag and nsup</h2>
+      <p class="lede">Because writes are append-only, wblocks fill with dead records. <code>defrag</code> copies the survivors out of a sparse wblock and frees it. Separately, the namespace supervisor <code>nsup</code> (<code>nsup-period</code>) sweeps the index, <b>expiring</b> records past their <code>void_time</code> and <b>evicting</b> oldest-TTL records when space runs low.</p>
+      <div class="twocol">
+        <div class="diagram">
+          <div class="ti" style="font-size:12px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)">defrag: sparse wblock → free</div>
+          <div class="wblock"><div class="rblocks" id="defragBefore"></div></div>
+          <div class="arrow" style="display:block;text-align:center;margin:6px 0">↓</div>
+          <div class="wblock" style="border-color:var(--green)"><div class="rblocks" id="defragAfter"></div></div>
+          <div class="s" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:8px">survivors re-written, index re-pointed, wblock → FREE</div>
+        </div>
+        <div class="diagram">
+          <div class="ti" style="font-size:12px;color:var(--muted);margin-bottom:8px;font-family:var(--mono)">nsup: TTL expiry by void_time</div>
+          <div id="ttlRows"></div>
+          <div class="callout" style="margin-top:14px"><b>AeroStream uses this:</b> every stream record is written with a TTL. <code>nsup</code> ages log records out with no compaction of its own — which is why the <code>aerostream</code> namespace must set <code>nsup-period &gt; 0</code>.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STAGE 7 -->
+    <section class="stage" data-title="read path">
+      <h2><span class="n">07</span> The read path — one hop</h2>
+      <p class="lede">A point read reserves the partition, walks the sprig's red-black tree by digest to the <code>as_index</code>, reads <code>file_id + rblock_id</code>, fetches the rblocks (from the post-write cache if hot, else the device), validates the <code>as_flat_record</code> magic, and unpacks the requested bins (<code>as_flat_unpack_bins</code>) back into typed particles.</p>
+      <div class="diagram">
+        <div class="flow" style="gap:10px">
+          <div class="node accent-blue reveal"><div class="t">reserve partition</div><div class="s">as_partition_reserve()</div></div>
+          <div class="arrow">→</div>
+          <div class="node accent-amber reveal"><div class="t">index find</div><div class="s">sprig walk by digest</div></div>
+          <div class="arrow">→</div>
+          <div class="node accent-teal reveal"><div class="t">locate data</div><div class="s">file_id + rblock_id</div></div>
+          <div class="arrow">→</div>
+          <div class="node reveal"><div class="t">fetch + unpack</div><div class="s">cache ∥ device → as_bin</div></div>
+        </div>
+        <div class="callout reveal" style="margin-top:22px"><b>Why p99 stays flat:</b> a read is one in-RAM tree walk plus <i>at most one</i> device read. No B-tree descent on disk, no read amplification — that single-hop design is the whole latency story, even on SSD.</div>
+        <div class="diagram" style="margin-top:22px">
+          <div class="ti" style="font-size:12px;color:var(--muted);margin-bottom:10px;font-family:var(--mono)">… and this is exactly how an AeroStream consumer reads a log record:</div>
+          <div class="flow" style="gap:10px">
+            <div class="node"><div class="t">key</div><div class="s">{stream}:{part}:{offset}</div></div>
+            <div class="arrow">→</div>
+            <div class="node"><div class="t">as_record_get</div><div class="s">digest → sprig</div></div>
+            <div class="arrow">→</div>
+            <div class="node accent-teal"><div class="t">as_storage_rd_load_bins</div><div class="s">payload · ts · offset</div></div>
+            <div class="arrow">→</div>
+            <div class="node accent-pink"><div class="t">push to consumer</div><div class="s">STREAM_RECORD</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STAGE 8 -->
+    <section class="stage" data-title="aerostream · protocol">
+      <h2><span class="n">08</span> AeroStream — the broker <em>is</em> the database</h2>
+      <p class="lede">AeroStream adds Kafka-style streams to this same engine. It claims 8 new <code>as_proto</code> message types (<code>10–17</code>) on the existing port 3000, dispatched from <code>service.c</code> into a self-contained module. A stream record is just an Aerospike record in the <code>aerostream</code> namespace — no separate broker, no extra hop.</p>
+      <div class="twocol">
+        <div class="diagram">
+          <div class="types">
+            <div class="type"><span class="id">10</span><span class="nm">STREAM_PRODUCE</span><span class="dir">C→S</span></div>
+            <div class="type"><span class="id srv">11</span><span class="nm">STREAM_PROD_ACK</span><span class="dir">S→C</span></div>
+            <div class="type"><span class="id">12</span><span class="nm">STREAM_CONSUME</span><span class="dir">C→S</span></div>
+            <div class="type"><span class="id srv">13</span><span class="nm">STREAM_RECORD</span><span class="dir">S→C</span></div>
+            <div class="type"><span class="id">14</span><span class="nm">STREAM_ACK</span><span class="dir">C→S</span></div>
+            <div class="type"><span class="id">15</span><span class="nm">STREAM_SEEK</span><span class="dir">C→S</span></div>
+            <div class="type"><span class="id">16</span><span class="nm">STREAM_SUB</span><span class="dir">C→S</span></div>
+            <div class="type"><span class="id">17</span><span class="nm">STREAM_UNSUB</span><span class="dir">C→S</span></div>
+          </div>
+        </div>
+        <div class="diagram">
+          <div class="node accent-teal reveal">
+            <div class="t">namespace aerostream</div>
+            <div class="s" style="margin-top:8px;line-height:1.8;color:var(--ink)">
+              <div>set <span style="color:var(--teal)">log</span> — one record per message<br><span style="color:var(--muted)">key {stream}:{partition}:{offset}</span></div>
+              <div>set <span style="color:var(--blue)">consumer_offsets</span> — per group<br><span style="color:var(--muted)">key {group}:{stream}:{partition}</span></div>
+              <div>set <span style="color:var(--amber)">config</span> — per stream<br><span style="color:var(--muted)">partitions · TTL · ack mode</span></div>
+            </div>
+          </div>
+          <div class="node reveal" style="margin-top:12px">
+            <div class="t">core diff: ~40 lines</div>
+            <div class="s">proto.h (type constants + wire structs) + service.c (dispatch). all logic in as/src/modules/aerostream/</div>
+          </div>
+        </div>
+      </div>
+      <div class="callout reveal"><b>The whole idea:</b> stop running Kafka next to Aerospike. The log, the consumer offsets, and the records are all in the one process, on the one storage engine you already trust.</div>
+    </section>
+
+    <!-- STAGE 9 -->
+    <section class="stage" data-title="aerostream · produce">
+      <h2><span class="n">09</span> Produce — append to a partitioned log</h2>
+      <p class="lede"><code>STREAM_PRODUCE</code> hashes the partition key (<code>fnv32a % num_partitions</code>) to pick a stream partition, assigns the next offset with a lock-free atomic (<code>as_faa_uint64(&amp;offset_seq)</code>), then writes the record through the exact storage write path from stage 5 (an <code>IOPS</code> internal transaction). Bins: <code>payload</code> (BLOB), <code>ts</code>, <code>offset</code>.</p>
+      <div class="twocol">
+        <div class="diagram">
+          <div class="lanes" style="grid-template-columns:1fr 1fr">
+            <div class="lane" id="pl0"><span class="dot"></span><div class="ti">route</div><div class="si">fnv32a(key)<br>% num_partitions</div></div>
+            <div class="lane" id="pl1"><span class="dot"></span><div class="ti">assign offset</div><div class="si">as_faa_uint64<br>(&amp;offset_seq)</div></div>
+            <div class="lane" id="pl2"><span class="dot"></span><div class="ti">write record</div><div class="si">IOPS → log set<br>as_flat_record</div></div>
+            <div class="lane" id="pl3"><span class="dot"></span><div class="ti">ack</div><div class="si">STREAM_PROD_ACK<br>offset + ts</div></div>
+          </div>
+        </div>
+        <div class="diagram" style="display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <div class="counter"><span id="offsetCounter">42</span><span class="lbl">next offset · partition 3</span></div>
+          <div class="node reveal" style="margin-top:18px;font-family:var(--mono);font-size:11.5px">
+            key = <span style="color:var(--teal)">orders:3:42</span>
+          </div>
+        </div>
+      </div>
+      <div class="callout reveal"><b>Offsets survive restart.</b> The counter is in-memory (<code>as_faa_uint64</code>, one instruction, no I/O), and on restart it's rebuilt by an exponential + binary search over the existing log keys — so new writes never clobber old records.</div>
+    </section>
+
+    <!-- STAGE 10 -->
+    <section class="stage" data-title="aerostream · consume">
+      <h2><span class="n">10</span> Consume — a server-push session</h2>
+      <p class="lede"><code>STREAM_CONSUME</code> opens a persistent session. A dedicated per-partition <b>push thread</b> holds the client <code>fd</code> open, reads records the same way as stage 7 (<code>as_record_get → as_storage_rd_load_bins</code>), and pushes <code>STREAM_RECORD</code> messages as they appear. The client sends <code>STREAM_ACK</code> to advance the committed offset and free an in-flight slot (<code>max_in_flight</code>).</p>
+      <div class="diagram">
+        <div class="flow" style="gap:14px;justify-content:center">
+          <div class="node pulse-node accent-amber" id="cn0"><div class="t">log set</div><div class="s">{stream}:{part}:{off}</div></div>
+          <div class="arrow">→</div>
+          <div class="node pulse-node accent-teal" id="cn1"><div class="t">push thread</div><div class="s">per-partition · holds fd</div></div>
+          <div class="arrow">→</div>
+          <div class="node pulse-node accent-blue" id="cn2"><div class="t">consumer</div><div class="s">STREAM_RECORD</div></div>
+          <div class="arrow" style="animation:none">⟲</div>
+          <div class="node pulse-node" id="cn3"><div class="t">STREAM_ACK</div><div class="s">commit + free slot</div></div>
+        </div>
+        <div class="s" style="text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:18px" id="consumeNote">push loop: deliver until in_flight == max_in_flight, then pause until an ACK frees a slot</div>
+      </div>
+      <div class="callout reveal"><b>Full duplex on one socket.</b> The service thread reads your ACKs while the push thread writes records — the connection stays open for the life of the session, which is why this needs a dedicated thread, not the request/response pool.</div>
+    </section>
+
+    <!-- STAGE 11 -->
+    <section class="stage" data-title="aerostream · groups + replay">
+      <h2><span class="n">11</span> Consumer groups &amp; replay</h2>
+      <p class="lede">Each group keeps its own committed offset per partition in the <code>consumer_offsets</code> set, so groups read the same log independently and at their own pace. <code>STREAM_SEEK</code> rewinds a group to any offset or timestamp. A timestamp seek is a <b>binary search</b> on the monotonic <code>ts</code> bin — <code>O(log N)</code> direct key reads, no secondary index.</p>
+      <div class="diagram">
+        <div class="grouprow">
+          <span class="glabel" style="color:var(--teal)">billing</span>
+          <div class="gtrack"><div class="gfill" id="gA" style="background:linear-gradient(90deg,#1c8f80,var(--teal))"></div><span class="gcap">committed @ 1180</span></div>
+        </div>
+        <div class="grouprow">
+          <span class="glabel" style="color:var(--blue)">analytics</span>
+          <div class="gtrack"><div class="gfill" id="gB" style="background:linear-gradient(90deg,#2b5a8f,var(--blue))"></div><span class="gcap">committed @ 540</span></div>
+        </div>
+        <div class="grouprow">
+          <span class="glabel" style="color:var(--amber)">replay</span>
+          <div class="gtrack"><div class="gfill" id="gC" style="background:linear-gradient(90deg,#8f6a1c,var(--amber))"></div><span class="gcap">SEEK → ts → @ 200</span></div>
+        </div>
+        <div class="s" style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:6px">one log, three positions — head @ 1420 · same records, read three different ways</div>
+      </div>
+      <div class="callout reveal"><b>Replay is not a copy.</b> Seeking just moves a committed offset back and re-reads the records that are still in the <code>log</code> set. The data was never consumed-and-deleted — TTL is the only thing that removes it.</div>
+    </section>
+
+    <!-- STAGE 12 -->
+    <section class="stage" data-title="aerostream · pub/sub">
+      <h2><span class="n">12</span> Pub/sub — ephemeral fan-out</h2>
+      <p class="lede"><code>STREAM_SUB</code> registers a subscriber in an in-memory registry keyed by topic. On every produce, the record is fanned out <b>live</b> to all subscribers on that topic — using the same <code>STREAM_RECORD</code> format, but with no offsets and no durability. Disconnect and you miss whatever was sent meanwhile.</p>
+      <div class="diagram">
+        <div class="flow" style="gap:14px;align-items:center">
+          <div class="node accent-amber reveal"><div class="t">produce</div><div class="s">topic = stream name</div></div>
+          <div class="arrow">→</div>
+          <div class="node pulse-node pink" id="fanHub"><div class="t">in-memory registry</div><div class="s">cf_shash · per topic</div></div>
+          <div class="arrow">→</div>
+          <div class="subs">
+            <div class="sub" id="sub0">subscriber A</div>
+            <div class="sub" id="sub1">subscriber B</div>
+            <div class="sub" id="sub2">subscriber C</div>
+          </div>
+        </div>
+      </div>
+      <div class="twocol" style="margin-top:22px">
+        <div class="callout" style="margin:0"><b>consume</b> = durable. committed offsets, replay, survives reconnects. reads the stored <code>log</code> set. → like a Kafka group.</div>
+        <div class="callout" style="margin:0;border-left-color:var(--pink2);background:rgba(244,114,182,.06)"><b style="color:var(--pink2)">subscribe</b> = ephemeral. no offsets, no replay, live only. miss it while offline and it's gone. → like Redis pub/sub.</div>
+      </div>
+      <div class="s" style="text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:18px">the same produce feeds both: durable append to the log <i>and</i> live fan-out to subscribers, in one operation</div>
+    </section>
+
+  </div>
+
+  <p class="foot">Companion deep-dive: <a href="HOW-AEROSPIKE-STORES-DATA.md">HOW-AEROSPIKE-STORES-DATA.md</a>. All terms map to real structs in <span class="mono">aerospike-server/as/</span>.</p>
+</div>
+
+<div class="controls">
+  <div class="inner">
+    <button id="prev">‹ Prev</button>
+    <button id="play" class="play">▶ Play</button>
+    <button id="next">Next ›</button>
+    <div class="bar"><i id="barFill"></i></div>
+    <span class="count" id="count"></span>
+  </div>
+</div>
+
+<script>
+(function () {
+  const stages = Array.from(document.querySelectorAll('.stage'));
+  const rail = document.getElementById('rail');
+  const count = document.getElementById('count');
+  const barFill = document.getElementById('barFill');
+  let idx = 0, playing = false, timer = null;
+
+  // build rail
+  stages.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.textContent = (i + 1) + ' · ' + s.dataset.title;
+    b.addEventListener('click', () => go(i));
+    rail.appendChild(b);
+  });
+  const railBtns = Array.from(rail.children);
+
+  // ---- per-stage dynamic content builders ----
+  function buildDigest() {
+    const host = document.getElementById('digestBytes');
+    if (!host || host.dataset.built) return; host.dataset.built = '1';
+    const hex = ['B3','4B','9F','2C','71','08','EE','5A','C1','77',
+                 '3D','A0','6B','12','84','F0','29','5E','BD','41'];
+    hex.forEach((h, i) => {
+      const d = document.createElement('div');
+      d.className = 'byte' + (i < 4 ? ' hot' : '');
+      d.style.setProperty('--i', i);
+      d.textContent = h;
+      host.appendChild(d);
+    });
+  }
+  function buildPgrid() {
+    const g = document.getElementById('pgrid');
+    if (!g || g.dataset.built) return; g.dataset.built = '1';
+    for (let i = 0; i < 256; i++) {
+      const c = document.createElement('div');
+      c.className = 'pcell' + (i === 179 ? ' target' : '');
+      g.appendChild(c);
+    }
+  }
+  function buildRblocks(id, spec) {
+    const row = document.getElementById(id);
+    if (!row || row.dataset.built) return; row.dataset.built = '1';
+    spec.forEach(cls => {
+      const rb = document.createElement('div');
+      rb.className = 'rb' + (cls ? ' ' + cls : '');
+      row.appendChild(rb);
+    });
+  }
+  function buildTtl() {
+    const host = document.getElementById('ttlRows');
+    if (!host || host.dataset.built) return; host.dataset.built = '1';
+    const rows = [
+      ['orders:3:40', 'void_time passed', 'expired', 'var(--red)'],
+      ['orders:3:41', 'void_time passed', 'expired', 'var(--red)'],
+      ['orders:3:42', 'TTL active', 'kept', 'var(--green)'],
+      ['orders:3:43', 'TTL active', 'kept', 'var(--green)'],
+    ];
+    rows.forEach((r, i) => {
+      const d = document.createElement('div');
+      d.className = 'node reveal';
+      d.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;animation-delay:' + (i * 0.12) + 's';
+      d.innerHTML = '<span style="font-family:var(--mono);font-size:12px">' + r[0] + '</span>' +
+        '<span style="font-family:var(--mono);font-size:11px;color:var(--muted)">' + r[1] + '</span>' +
+        '<span style="font-family:var(--mono);font-size:11px;color:' + r[3] + '">' + r[2] + '</span>';
+      host.appendChild(d);
+    });
+  }
+
+  // write-path token animation
+  let writeTimers = [];
+  function clearWrite() { writeTimers.forEach(clearTimeout); writeTimers = []; }
+  function runWritePath() {
+    clearWrite();
+    const lanes = Array.from(document.querySelectorAll('#lanes .lane'));
+    const token = document.getElementById('token');
+    if (!lanes.length || !token) return;
+    lanes.forEach(l => l.classList.remove('lit'));
+    function place(i) {
+      const lane = lanes[i];
+      const shell = document.getElementById('shell').getBoundingClientRect();
+      const lanesBox = document.getElementById('lanes').getBoundingClientRect();
+      const r = lane.getBoundingClientRect();
+      const stageBox = lane.closest('.stage').getBoundingClientRect();
+      token.style.transition = 'left .5s cubic-bezier(.3,.8,.3,1), top .5s';
+      token.style.left = (r.left - stageBox.left + r.width / 2 - 28) + 'px';
+      token.style.top = (lanesBox.top - stageBox.top - 30) + 'px';
+    }
+    let i = 0;
+    function step() {
+      lanes.forEach(l => l.classList.remove('lit'));
+      lanes[i].classList.add('lit');
+      place(i);
+      i++;
+      if (i < lanes.length) writeTimers.push(setTimeout(step, 850));
+      else writeTimers.push(setTimeout(() => { if (playing) {} }, 600));
+    }
+    // initial token position then start
+    place(0);
+    writeTimers.push(setTimeout(step, 250));
+  }
+
+  // ---- aerostream stage loops ----
+  let loopTimers = [];
+  function clearLoops() {
+    loopTimers.forEach(t => { clearInterval(t); clearTimeout(t); });
+    loopTimers = [];
+    document.querySelectorAll('.lane.lit, .pulse-node.lit, .sub.lit')
+      .forEach(e => e.classList.remove('lit'));
+  }
+
+  function runProduce() {
+    const lanes = ['pl0','pl1','pl2','pl3'].map(id => document.getElementById(id));
+    const counter = document.getElementById('offsetCounter');
+    if (!lanes[0]) return;
+    let off = 42, step = 0;
+    const iv = setInterval(() => {
+      lanes.forEach(l => l.classList.remove('lit'));
+      lanes[step].classList.add('lit');
+      if (step === 3 && counter) { off++; counter.textContent = off; }
+      step = (step + 1) % 4;
+    }, 680);
+    loopTimers.push(iv);
+  }
+
+  function runConsume() {
+    const nodes = ['cn0','cn1','cn2','cn3'].map(id => document.getElementById(id));
+    if (!nodes[0]) return;
+    let s = 0;
+    const iv = setInterval(() => {
+      nodes.forEach(n => n.classList.remove('lit'));
+      nodes[s].classList.add('lit');
+      s = (s + 1) % 4;
+    }, 620);
+    loopTimers.push(iv);
+  }
+
+  function runGroups() {
+    const set = (id, w) => {
+      const e = document.getElementById(id);
+      if (!e) return;
+      e.style.width = '0%';
+      loopTimers.push(setTimeout(() => { e.style.width = w; }, 120));
+    };
+    set('gA', '83%');  // 1180 / 1420
+    set('gB', '38%');  //  540 / 1420
+    set('gC', '14%');  //  200 / 1420
+  }
+
+  function runFanout() {
+    const hub = document.getElementById('fanHub');
+    const subs = ['sub0','sub1','sub2'].map(id => document.getElementById(id));
+    if (!subs[0]) return;
+    const burst = () => {
+      if (hub) { hub.classList.add('lit'); loopTimers.push(setTimeout(() => hub.classList.remove('lit'), 320)); }
+      subs.forEach((s, k) => loopTimers.push(setTimeout(() => {
+        s.classList.add('lit');
+        loopTimers.push(setTimeout(() => s.classList.remove('lit'), 520));
+      }, 160 + k * 130)));
+    };
+    burst();
+    const iv = setInterval(burst, 1700);
+    loopTimers.push(iv);
+  }
+
+  function activate(i) {
+    buildDigest(); buildPgrid();
+    buildRblocks('rblockRow', ['live','live','dead','live','live','dead','dead','live','live','', '', '', '', '', '', '', '']);
+    buildRblocks('defragBefore', ['live','dead','dead','live','dead','dead','dead','live','dead','dead','dead','dead']);
+    buildRblocks('defragAfter', ['live','live','live','', '', '', '', '', '', '', '', '']);
+    buildTtl();
+
+    clearWrite(); clearLoops();
+    if (i === 4) runWritePath();
+    else if (i === 8) runProduce();
+    else if (i === 9) runConsume();
+    else if (i === 10) runGroups();
+    else if (i === 11) runFanout();
+  }
+
+  function go(i) {
+    idx = Math.max(0, Math.min(stages.length - 1, i));
+    stages.forEach((s, k) => s.classList.toggle('active', k === idx));
+    railBtns.forEach((b, k) => b.classList.toggle('on', k === idx));
+    count.textContent = (idx + 1) + ' / ' + stages.length;
+    barFill.style.width = ((idx + 1) / stages.length * 100) + '%';
+    // restart CSS animations by reflow
+    const active = stages[idx];
+    active.querySelectorAll('.reveal').forEach(el => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; });
+    activate(idx);
+    document.getElementById('shell').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function next() { if (idx < stages.length - 1) go(idx + 1); else stop(); }
+  function prev() { go(idx - 1); }
+
+  function play() {
+    playing = true;
+    document.getElementById('play').textContent = '❚❚ Pause';
+    schedule();
+  }
+  function stop() {
+    playing = false;
+    document.getElementById('play').textContent = '▶ Play';
+    if (timer) clearTimeout(timer);
+  }
+  function schedule() {
+    if (timer) clearTimeout(timer);
+    if (!playing) return;
+    timer = setTimeout(() => {
+      if (idx < stages.length - 1) { go(idx + 1); schedule(); }
+      else stop();
+    }, 4200);
+  }
+
+  document.getElementById('next').addEventListener('click', () => { stop(); next(); });
+  document.getElementById('prev').addEventListener('click', () => { stop(); prev(); });
+  document.getElementById('play').addEventListener('click', () => { playing ? stop() : play(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight') { stop(); next(); }
+    else if (e.key === 'ArrowLeft') { stop(); prev(); }
+    else if (e.key === ' ') { e.preventDefault(); playing ? stop() : play(); }
+  });
+
+  go(0);
+})();
+</script>
+</body>
+</html>
