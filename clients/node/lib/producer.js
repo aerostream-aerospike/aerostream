@@ -52,12 +52,13 @@ class Producer extends Connection {
    * @param {string} o.stream
    * @param {string} [o.partitionKey='']  used for consistent-hash partition routing
    * @param {Buffer|string} o.payload
+   * @param {object|Array} [o.headers]    per-record metadata; { key: value } or [{key, value}]
    * @param {number} [o.ackMode=C.ACK_MODE.LEADER]
    * @returns {Promise<{offset:BigInt, partitionId:number, timestampNs:BigInt, status:number}|null>}
    */
-  produce({ stream, partitionKey = '', payload, ackMode = C.ACK_MODE.LEADER }) {
+  produce({ stream, partitionKey = '', payload, headers, ackMode = C.ACK_MODE.LEADER }) {
     const correlationId = this.nextCorrelationId();
-    const frame = proto.encodeProduce({ correlationId, stream, partitionKey, ackMode, payload });
+    const frame = proto.encodeProduce({ correlationId, stream, partitionKey, ackMode, payload, headers });
 
     if (ackMode === C.ACK_MODE.NONE) {
       return this.send(frame).then(() => null);

@@ -29,6 +29,18 @@ class Consumer extends Connection {
 
   _handleFrame(type, body) {
     if (type !== C.TYPE.RECORD) {
+      // 1-byte status frame (e.g. back-pressure). The server echoes the
+      // message type it pertains to plus a single status byte.
+      if (body.length === 1) {
+        const status = body.readUInt8(0);
+        const name = C.STATUS_NAME[status] || `0x${status.toString(16)}`;
+        if (status === C.STATUS.ERR_MAX_IN_FLIGHT) {
+          // Paused: you have max_in_flight unacked records. ACK to resume.
+          this.emit('backpressure');
+        }
+        this.emit('status', { status, name });
+        return;
+      }
       this.emit('frame', type, body);
       return;
     }

@@ -150,9 +150,11 @@ not started yet, i will do when i feel like :)
 
 early but real. the server module builds, runs, and handles all 8 message types,
 and the node client does produce, consume, replay, and pub/sub end-to-end against
-it. there are still rough edges (headers bin not written yet, consumer-group acks
-aren't CAS-protected yet, pub/sub holds a lock during fan-out) and the go/java
-clients don't exist. the design doc and protocol spec are in `docs/`.
+it. per-record headers round-trip, consumer-group commits are CAS-protected
+(generation-check writes, no double-commit), and consumers get an explicit
+back-pressure signal at max_in_flight. still rough in places (pub/sub holds a
+lock during fan-out, multi-node/cluster is untested) and the go/java clients
+don't exist. the design doc and protocol spec are in `docs/`.
 
 if you've ever been annoyed by the aerospike + kafka setup or have thoughts on the
 protocol design, open an issue or read through `docs/DESIGN.md`.

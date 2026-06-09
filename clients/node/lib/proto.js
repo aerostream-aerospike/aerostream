@@ -51,6 +51,31 @@ function readName(buf, offset, width = C.NAME_SZ) {
   return buf.toString('utf8', offset, end);
 }
 
+function toBuf(v) {
+  return Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'utf8');
+}
+
+// Encode headers into the wire as_stream_header_entry sequence.
+// Accepts an object { key: value } or an array of { key, value }.
+// Returns { buf, count }. Values may be strings or Buffers.
+function encodeHeaders(headers) {
+  if (!headers) return { buf: Buffer.alloc(0), count: 0 };
+
+  const entries = Array.isArray(headers)
+    ? headers.map(h => [String(h.key), toBuf(h.value)])
+    : Object.entries(headers).map(([k, v]) => [String(k), toBuf(v)]);
+
+  const parts = entries.map(([k, v]) => {
+    const kb = Buffer.from(k, 'utf8');
+    const head = Buffer.alloc(4);
+    head.writeUInt16BE(kb.length, 0);  // key_size  (BE)
+    head.writeUInt16BE(v.length, 2);   // val_size  (BE)
+    return Buffer.concat([head, kb, v]);
+  });
+
+  return { buf: Buffer.concat(parts), count: entries.length };
+}
+
 // ---------------------------------------------------------------------------
 // Encoders (client -> server)
 // ---------------------------------------------------------------------------
@@ -59,12 +84,14 @@ function readName(buf, offset, width = C.NAME_SZ) {
  * STREAM_PRODUCE (type 10).
  * Body: stream_hdr(72) + partition_key(64) + ack_mode(1) + record_hdr(22) + payload
  */
-function encodeProduce({ correlationId, stream, partitionKey, ackMode, payload }) {
+function encodeProduce({ correlationId, stream, partitionKey, ackMode, payload, headers }) {
   const pay = payload == null
     ? Buffer.alloc(0)
     : Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
 
-  const bodySize = C.SIZE.PRODUCE_FIXED + pay.length;
+  const hdr = encodeHeaders(headers);
+
+  const bodySize = C.SIZE.PRODUCE_FIXED + hdr.buf.length + pay.length;
   const buf = Buffer.alloc(C.HEADER_SZ + bodySize);
 
   encodeHeader(C.TYPE.PRODUCE, bodySize).copy(buf, 0);
@@ -77,12 +104,13 @@ function encodeProduce({ correlationId, stream, partitionKey, ackMode, payload }
   writeName(buf, p, partitionKey == null ? '' : partitionKey); p += C.NAME_SZ;
   // ack_mode
   buf.writeUInt8(ackMode & 0xff, p);              p += 1;
-  // record_hdr: offset=-1 (server assigns), ts=0, headers_count=0, payload_size
+  // record_hdr: offset=-1 (server assigns), ts=0, headers_count, payload_size
   buf.writeBigInt64BE(-1n, p);                    p += 8;  // offset
   buf.writeBigUInt64BE(0n, p);                    p += 8;  // timestamp_ns
-  buf.writeUInt16BE(0, p);                        p += 2;  // headers_count
+  buf.writeUInt16BE(hdr.count, p);                p += 2;  // headers_count
   buf.writeUInt32BE(pay.length, p);               p += 4;  // payload_size
-  // payload
+  // header entries, then payload
+  hdr.buf.copy(buf, p);                           p += hdr.buf.length;
   pay.copy(buf, p);
 
   return buf;
